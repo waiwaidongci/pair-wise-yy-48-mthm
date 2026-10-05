@@ -13,6 +13,7 @@ const items = [
   { to: '/devices', title: '设备与分区', icon: 'mdi-access-point' },
   { to: '/matrix', title: '因果矩阵', icon: 'mdi-grid-large' },
   { to: '/dependency', title: '依赖图', icon: 'mdi-graph-outline' },
+  { to: '/commissioning', title: '联调账', icon: 'mdi-clipboard-text-play-outline' },
   { to: '/review', title: '版本审阅', icon: 'mdi-file-compare' },
 ]
 </script>

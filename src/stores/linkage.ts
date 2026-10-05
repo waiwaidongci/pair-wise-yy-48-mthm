@@ -1,5 +1,6 @@
 import { computed, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
+import { computeValidations } from '../lib/linkageGraph'
 
 export type DeviceType = '感烟探测器' | '感温探测器' | '手动报警按钮' | '输入模块' | '输出模块' | '排烟风机' | '防火卷帘' | '消防广播' | '电梯'
 export type Device = { id: string; name: string; type: DeviceType; floor: string; zone: string; address: string }
@@ -49,32 +50,7 @@ export const useLinkageStore = defineStore('linkage', () => {
   const acceptedChanges = ref<string[]>(restored?.acceptedChanges ?? ['CH-01'])
   const selectedRuleIds = ref<string[]>([])
 
-  const validations = computed<Validation[]>(() => {
-    const result: Validation[] = []
-    const triggers = devices.value.filter((device) => ['感烟探测器', '感温探测器', '手动报警按钮', '输入模块'].includes(device.type))
-    for (const trigger of triggers) {
-      const enabled = rules.value.filter((rule) => rule.triggerId === trigger.id && rule.enabled)
-      if (enabled.length === 0) {
-        result.push({ id: `missing-${trigger.id}`, severity: '错误', ruleIds: [], title: `${trigger.name} 缺少联动动作`, detail: '报警点未配置任何启用的因果规则。', suggestion: '至少配置广播、排烟或疏散相关动作。' })
-      }
-      const actionCount = new Map<string, number>()
-      enabled.forEach((rule) => actionCount.set(rule.actionId, (actionCount.get(rule.actionId) ?? 0) + 1))
-      actionCount.forEach((count, actionId) => {
-        if (count > 1) result.push({ id: `duplicate-${trigger.id}-${actionId}`, severity: '警告', ruleIds: enabled.filter((rule) => rule.actionId === actionId).map((rule) => rule.id), title: `${trigger.name} 存在重复动作`, detail: `同一个动作 ${actionId} 被重复配置 ${count} 次。`, suggestion: '合并规则或明确主备关系。' })
-      })
-    }
-    rules.value.filter((rule) => rule.enabled).forEach((rule) => {
-      const trigger = devices.value.find((device) => device.id === rule.triggerId)
-      const action = devices.value.find((device) => device.id === rule.actionId)
-      if (trigger && action && trigger.zone !== action.zone && rule.suppression === '无') {
-        result.push({ id: `cross-${rule.id}`, severity: '警告', ruleIds: [rule.id], title: `${rule.id} 跨区联动未配置抑制`, detail: `${trigger.zone} 报警将直接触发 ${action.zone} 动作。`, suggestion: '确认疏散边界并增加分区确认或抑制条件。' })
-      }
-      if (rule.interlock && rule.delay > 5 && rule.priority === 1) {
-        result.push({ id: `contradiction-${rule.id}`, severity: '错误', ruleIds: [rule.id], title: `${rule.id} 互锁与高优先级延时冲突`, detail: '一级优先规则在互锁未明确反馈前延时超过 5 秒。', suggestion: '缩短延时或改为反馈后触发。' })
-      }
-    })
-    return result
-  })
+  const validations = computed<Validation[]>(() => computeValidations(devices.value, rules.value))
 
   watch([devices, rules, revision, locked, acceptedChanges], () => {
     localStorage.setItem('fire-linkage-draft-v1', JSON.stringify({ devices: devices.value, rules: rules.value, revision: revision.value, locked: locked.value, acceptedChanges: acceptedChanges.value }))

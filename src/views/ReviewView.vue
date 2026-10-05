@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useLinkageStore } from '../stores/linkage'
+import { useCommissioningStore } from '../stores/commissioning'
+import { computeValidations } from '../lib/linkageGraph'
 
 const store = useLinkageStore()
+const commissioning = useCommissioningStore()
 const checklist = ref([
   { done: true, title: '设备地址与竣工图一致', owner: '消防电专业' },
   { done: true, title: '所有报警点完成单点调试', owner: '调试组' },
@@ -15,18 +18,23 @@ const changes = [
   { id: 'CH-02', title: '电梯归位延时由 0 秒调整至 10 秒', source: '电梯专业', oldValue: '延时：0s', newValue: '延时：10s', risk: '中' },
   { id: 'CH-03', title: '机房感烟联动 1F 排烟风机', source: '智能化专业', oldValue: '无关系', newValue: 'R-007 / 当前停用', risk: '高' },
 ]
-const canLock = computed(() => store.validations.filter((item) => item.severity === '错误').length === 0 && checklist.value.every((item) => item.done))
+
+// 版本审阅只能采用最新运行快照
+const latestRun = computed(() => commissioning.latestRun)
+const snapshotValidations = computed(() => (latestRun.value ? computeValidations(latestRun.value.snapshot.devices, latestRun.value.snapshot.rules) : []))
+const snapshotErrorCount = computed(() => snapshotValidations.value.filter((item) => item.severity === '错误').length)
+const canLock = computed(() => !!latestRun.value && snapshotErrorCount.value === 0 && checklist.value.every((item) => item.done))
 
 function accept(id: string) {
   if (!store.acceptedChanges.includes(id)) store.acceptedChanges.push(id)
 }
 
 function exportPackage() {
-  const payload = JSON.stringify({ revision: store.revision, devices: store.devices, rules: store.rules, validations: store.validations, acceptedChanges: store.acceptedChanges }, null, 2)
+  const payload = JSON.stringify({ revision: latestRun.value?.revision ?? store.revision, runId: latestRun.value?.id, devices: latestRun.value?.snapshot.devices ?? store.devices, rules: latestRun.value?.snapshot.rules ?? store.rules, validations: snapshotValidations.value, acceptedChanges: store.acceptedChanges }, null, 2)
   const url = URL.createObjectURL(new Blob([payload], { type: 'application/json' }))
   const link = document.createElement('a')
   link.href = url
-  link.download = `消防联动交付包-R${store.revision}.json`
+  link.download = `消防联动交付包-R${latestRun.value?.revision ?? store.revision}.json`
   link.click()
   URL.revokeObjectURL(url)
 }
@@ -42,16 +50,26 @@ function exportPackage() {
     <v-alert v-if="!canLock && !store.locked" type="warning" variant="tonal" class="mb-3">签字前需清除所有错误规则并完成联调清单。</v-alert>
     <v-alert v-if="store.locked" type="success" variant="tonal" class="mb-3">当前版本 R{{ store.revision }} 已签字锁定，任何修改都会生成新的修订草稿。</v-alert>
 
+    <v-alert v-if="latestRun" type="info" variant="tonal" class="mb-3" prepend-icon="mdi-clipboard-text-play-outline">
+      版本审阅采用最新运行快照 <strong>{{ latestRun.id }}</strong>（R{{ latestRun.revision }} · {{ new Date(latestRun.createdAt).toLocaleString('zh-CN') }}），含 {{ latestRun.snapshot.devices.length }} 个点位、{{ latestRun.snapshot.rules.filter((r) => r.enabled).length }} 条启用规则。
+    </v-alert>
+    <v-alert v-else type="warning" variant="tonal" class="mb-3" prepend-icon="mdi-alert-outline">
+      尚未完成联调运行，版本审阅无可用快照。请先到「联调账」编排并完成一次联调，审阅只能采用最新运行快照。
+    </v-alert>
+
     <div class="review-grid">
       <section class="panel">
-        <div class="panel-head"><h3>矩阵校验结果</h3><v-chip size="small" color="error" variant="tonal">{{ store.validations.length }} 项</v-chip></div>
+        <div class="panel-head"><h3>矩阵校验结果</h3><v-chip size="small" :color="snapshotErrorCount ? 'error' : 'success'" variant="tonal">{{ latestRun ? snapshotValidations.length : '无快照' }}</v-chip></div>
         <div class="validation-list">
-          <article v-for="item in store.validations" :key="item.id" :class="item.severity">
-            <v-icon :icon="item.severity === '错误' ? 'mdi-close-octagon-outline' : 'mdi-alert-outline'" />
-            <div><strong>{{ item.title }}</strong><p>{{ item.detail }}</p><small>建议：{{ item.suggestion }}</small></div>
-            <v-btn size="small" variant="text" @click="$router.push('/matrix')">定位</v-btn>
-          </article>
-          <div v-if="store.validations.length === 0" class="empty-validation"><v-icon icon="mdi-check-decagram" size="38" color="success" /><strong>矩阵校验通过</strong><span>未发现遗漏、重复、矛盾或跨区冲突。</span></div>
+          <template v-if="latestRun">
+            <article v-for="item in snapshotValidations" :key="item.id" :class="item.severity">
+              <v-icon :icon="item.severity === '错误' ? 'mdi-close-octagon-outline' : 'mdi-alert-outline'" />
+              <div><strong>{{ item.title }}</strong><p>{{ item.detail }}</p><small>建议：{{ item.suggestion }}</small></div>
+              <v-btn size="small" variant="text" @click="$router.push('/matrix')">定位</v-btn>
+            </article>
+            <div v-if="snapshotValidations.length === 0" class="empty-validation"><v-icon icon="mdi-check-decagram" size="38" color="success" /><strong>快照校验通过</strong><span>未发现环、缺失设备、重复动作、矛盾或跨区冲突。</span></div>
+          </template>
+          <div v-else class="empty-validation"><v-icon icon="mdi-clipboard-text-play-outline" size="38" color="warning" /><strong>等待联调快照</strong><span>完成联调运行后，校验结果将基于最新快照呈现。</span><v-btn size="small" color="primary" variant="tonal" @click="$router.push('/commissioning')">前往联调账</v-btn></div>
         </div>
       </section>
 
