@@ -7,13 +7,13 @@ const query = ref('')
 const floor = ref('全部')
 const dialog = ref(false)
 const form = ref<Device>({ id: '', name: '', type: '感烟探测器', floor: '1F', zone: 'A 区', address: '' })
-const types: DeviceType[] = ['感烟探测器', '感温探测器', '手动报警按钮', '输入模块', '输出模块', '排烟风机', '防火卷帘', '消防广播', '电梯']
+const types: DeviceType[] = ['感烟探测器', '感温探测器', '手动报警按钮', '输入模块', '输出模块', '排烟风机', '排烟防火阀', '防火卷帘', '消防广播', '电梯']
 
 const filtered = computed(() => store.devices.filter((item) => (floor.value === '全部' || item.floor === floor.value) && `${item.id}${item.name}${item.address}`.includes(query.value)))
 
 function addDevice() {
   if (!form.value.id || !form.value.name || !form.value.address) return
-  store.devices.push({ ...form.value })
+  store.addDevice({ ...form.value })
   dialog.value = false
   form.value = { id: '', name: '', type: '感烟探测器', floor: '1F', zone: 'A 区', address: '' }
 }

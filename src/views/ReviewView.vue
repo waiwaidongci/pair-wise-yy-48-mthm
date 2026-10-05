@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { buildCommissioningGraph } from '../linkage/commissioning'
 import { useLinkageStore } from '../stores/linkage'
 
 const store = useLinkageStore()
@@ -11,18 +12,42 @@ const checklist = ref([
   { done: false, title: '签字交付包完成哈希校验', owner: '项目负责人' },
 ])
 const changes = [
-  { id: 'CH-01', title: 'PF-2 增加防火阀开启反馈互锁', source: '暖通专业', oldValue: '互锁：无', newValue: '互锁：防火阀开启反馈', risk: '低' },
+  { id: 'CH-01', title: 'PF-1 前增加防火阀开启反馈互锁', source: '暖通专业', oldValue: '直接启动 PF-1', newValue: 'FD-1 开启后启动 PF-1', risk: '低' },
   { id: 'CH-02', title: '电梯归位延时由 0 秒调整至 10 秒', source: '电梯专业', oldValue: '延时：0s', newValue: '延时：10s', risk: '中' },
   { id: 'CH-03', title: '机房感烟联动 1F 排烟风机', source: '智能化专业', oldValue: '无关系', newValue: 'R-007 / 当前停用', risk: '高' },
 ]
-const canLock = computed(() => store.validations.filter((item) => item.severity === '错误').length === 0 && checklist.value.every((item) => item.done))
+const latestSnapshot = computed(() => store.latestRun)
+const currentSnapshot = computed(() => store.currentSnapshot)
+const snapshotGraph = computed(() => currentSnapshot.value ? buildCommissioningGraph(currentSnapshot.value.devices, currentSnapshot.value.rules) : store.commissionGraph)
+const snapshotErrorCount = computed(() => snapshotGraph.value.issues.filter((issue) => issue.severity === '错误').length)
+const snapshotUsable = computed(() => store.latestRunIsUsable)
+const canLock = computed(() => snapshotUsable.value && checklist.value.every((item) => item.done))
 
 function accept(id: string) {
   if (!store.acceptedChanges.includes(id)) store.acceptedChanges.push(id)
 }
 
+function snapshotReason() {
+  if (!latestSnapshot.value) return '尚未运行联调账'
+  if (latestSnapshot.value.status === 'superseded') return '最新运行已被规则变更作废'
+  if (latestSnapshot.value.configHash !== store.commissionGraph.configHash) return '规则已变更，该快照不是当前版本'
+  if (latestSnapshot.value.status !== 'completed') return '运行仍暂停，需恢复并跑完'
+  if (snapshotErrorCount.value > 0) return '快照中仍有成环或缺失设备错误'
+  return '快照可用于审阅'
+}
+
 function exportPackage() {
-  const payload = JSON.stringify({ revision: store.revision, devices: store.devices, rules: store.rules, validations: store.validations, acceptedChanges: store.acceptedChanges }, null, 2)
+  const payload = JSON.stringify({
+    revision: store.revision,
+    configuration: {
+      hash: store.commissionGraph.configHash,
+      devices: store.devices,
+      rules: store.rules,
+    },
+    latestSnapshot: currentSnapshot.value ?? null,
+    validations: store.validations,
+    acceptedChanges: store.acceptedChanges,
+  }, null, 2)
   const url = URL.createObjectURL(new Blob([payload], { type: 'application/json' }))
   const link = document.createElement('a')
   link.href = url
@@ -35,12 +60,45 @@ function exportPackage() {
 <template>
   <section class="page">
     <div class="page-head">
-      <div><p class="eyebrow">REVIEW & SIGN-OFF / 审阅签字</p><h1>版本差异、联调清单与锁定</h1><p class="muted">多个专业提交后只接受经过审阅的变更，锁定后配置成为只读基线。</p></div>
+      <div><p class="eyebrow">REVIEW & SIGN-OFF / 审阅签字</p><h1>最新运行快照、版本差异与锁定</h1><p class="muted">版本审阅只采用最新且与当前规则哈希一致的联调运行；历史回执留档但不能用于签字。</p></div>
       <div class="actions"><v-btn variant="outlined" prepend-icon="mdi-download" @click="exportPackage">导出交付包</v-btn><v-btn v-if="!store.locked" color="primary" prepend-icon="mdi-lock-outline" :disabled="!canLock" @click="store.lockBaseline">签字锁定</v-btn><v-btn v-else color="warning" variant="outlined" @click="store.unlock">解锁修订</v-btn></div>
     </div>
 
-    <v-alert v-if="!canLock && !store.locked" type="warning" variant="tonal" class="mb-3">签字前需清除所有错误规则并完成联调清单。</v-alert>
-    <v-alert v-if="store.locked" type="success" variant="tonal" class="mb-3">当前版本 R{{ store.revision }} 已签字锁定，任何修改都会生成新的修订草稿。</v-alert>
+    <v-alert v-if="!snapshotUsable && !store.locked" type="warning" variant="tonal" class="mb-3">当前不能签字：{{ snapshotReason() }}。请进入联调账完成预检、运行和恢复。</v-alert>
+    <v-alert v-if="store.locked" type="success" variant="tonal" class="mb-3">当前版本 R{{ store.revision }} 已签字锁定；后续修改会生成新的规则版本和审阅快照。</v-alert>
+
+    <section class="panel snapshot-panel mb-3">
+      <div class="panel-head">
+        <h3>唯一可审阅运行快照</h3>
+        <v-chip size="small" :color="snapshotUsable ? 'success' : 'warning'" variant="tonal" prepend-icon="mdi-script-check-outline">{{ snapshotReason() }}</v-chip>
+      </div>
+      <div class="snapshot-grid">
+        <article>
+          <span>运行编号</span>
+          <strong>{{ latestSnapshot?.id ?? '—' }}</strong>
+          <small>创建时间：{{ latestSnapshot ? new Date(latestSnapshot.createdAt).toLocaleString() : '未创建' }}</small>
+        </article>
+        <article>
+          <span>规则哈希</span>
+          <strong class="mono">{{ store.commissionGraph.configHash.slice(0, 10) }}</strong>
+          <small>{{ latestSnapshot?.configHash === store.commissionGraph.configHash ? '快照与当前规则一致' : '快照与当前规则不一致' }}</small>
+        </article>
+        <article>
+          <span>动作回执</span>
+          <strong>{{ latestSnapshot?.receipts.filter((receipt) => receipt.status === 'completed').length ?? 0 }} 完成</strong>
+          <small>{{ latestSnapshot?.receipts.length ?? 0 }} 张原回执，完成记录不会重做</small>
+        </article>
+        <article>
+          <span>预检状态</span>
+          <strong :class="snapshotErrorCount ? 'error' : ''">{{ snapshotErrorCount }} 个错误</strong>
+          <small>错误路径已隔离；签字仍要求错误清零</small>
+        </article>
+      </div>
+      <div class="snapshot-actions">
+        <v-btn variant="tonal" prepend-icon="mdi-script-text-play-outline" @click="$router.push('/commissioning')">进入联调账</v-btn>
+        <v-btn v-if="latestSnapshot && !snapshotUsable" variant="tonal" color="warning" prepend-icon="mdi-refresh" @click="$router.push('/commissioning')">生成最新快照</v-btn>
+      </div>
+    </section>
 
     <div class="review-grid">
       <section class="panel">
@@ -49,9 +107,9 @@ function exportPackage() {
           <article v-for="item in store.validations" :key="item.id" :class="item.severity">
             <v-icon :icon="item.severity === '错误' ? 'mdi-close-octagon-outline' : 'mdi-alert-outline'" />
             <div><strong>{{ item.title }}</strong><p>{{ item.detail }}</p><small>建议：{{ item.suggestion }}</small></div>
-            <v-btn size="small" variant="text" @click="$router.push('/matrix')">定位</v-btn>
+            <v-btn size="small" variant="text" @click="$router.push(item.code ? '/dependency' : '/matrix')">定位</v-btn>
           </article>
-          <div v-if="store.validations.length === 0" class="empty-validation"><v-icon icon="mdi-check-decagram" size="38" color="success" /><strong>矩阵校验通过</strong><span>未发现遗漏、重复、矛盾或跨区冲突。</span></div>
+          <div v-if="store.validations.length === 0" class="empty-validation"><v-icon icon="mdi-check-decagram" size="38" color="success" /><strong>矩阵校验通过</strong><span>未发现遗漏、重复、矛盾、缺失或依赖闭环。</span></div>
         </div>
       </section>
 
@@ -86,6 +144,14 @@ function exportPackage() {
 
 <style scoped>
 .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.snapshot-panel { border-left: 4px solid #265e66; }
+.snapshot-grid { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 10px; padding: 14px; }
+.snapshot-grid article { padding: 13px; border: 1px solid #e2e7e8; border-radius: 9px; background: #fafbfb; }
+.snapshot-grid span, .snapshot-grid small { display: block; color: #758187; font-size: 11px; }
+.snapshot-grid strong { display: block; margin: 8px 0; color: #263c43; font-size: 14px; word-break: break-all; }
+.snapshot-grid strong.error { color: #b23e2a; }
+.mono { font-family: ui-monospace,monospace; }
+.snapshot-actions { display: flex; gap: 8px; padding: 0 14px 15px; }
 .review-grid { display: grid; grid-template-columns: minmax(0,1fr) 350px; gap: 14px; margin-bottom: 14px; }
 .validation-list { padding: 8px 16px 16px; }
 .validation-list article { display: grid; grid-template-columns: 28px 1fr auto; gap: 10px; padding: 13px 0; border-bottom: 1px solid #edf0f0; }
@@ -101,5 +167,6 @@ function exportPackage() {
 .change-panel :deep(table) { min-width: 850px; }
 .old { color: #a54b35; }
 .new { color: #2e755e; font-weight: 700; }
-@media (max-width: 1000px) { .review-grid { grid-template-columns: 1fr; } }
+@media (max-width: 1100px) { .review-grid, .snapshot-grid { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 760px) { .review-grid, .snapshot-grid { grid-template-columns: 1fr; } }
 </style>

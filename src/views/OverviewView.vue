@@ -8,6 +8,9 @@ const store = useLinkageStore()
 const { result } = useQuery(LINKAGE_QUERY)
 const errorCount = computed(() => store.validations.filter((item) => item.severity === '错误').length)
 const warningCount = computed(() => store.validations.filter((item) => item.severity === '警告').length)
+const detectorTypes = ['感烟探测器', '感温探测器', '手动报警按钮', '输入模块']
+const triggerCount = computed(() => store.devices.filter((device) => detectorTypes.includes(device.type)).length)
+const coveredCount = computed(() => store.devices.filter((device) => detectorTypes.includes(device.type) && store.rules.some((rule) => rule.triggerId === device.id && rule.enabled)).length)
 </script>
 
 <template>
@@ -20,22 +23,22 @@ const warningCount = computed(() => store.validations.filter((item) => item.seve
       </div>
       <div class="actions">
         <v-btn variant="outlined" prepend-icon="mdi-export-variant">导出配置</v-btn>
-        <v-btn color="primary" prepend-icon="mdi-check-decagram-outline" @click="$router.push('/review')">进入审阅</v-btn>
+        <v-btn color="primary" prepend-icon="mdi-script-text-play-outline" @click="$router.push('/commissioning')">进入联调账</v-btn>
       </div>
     </div>
 
     <div class="metric-grid">
       <article><span>点位总数</span><strong>{{ store.devices.length }}</strong><small>覆盖 2 个楼层分区</small></article>
       <article><span>启用规则</span><strong>{{ store.rules.filter((rule) => rule.enabled).length }}</strong><small>{{ store.rules.length }} 条矩阵关系</small></article>
-      <article><span>阻断错误</span><strong class="error">{{ errorCount }}</strong><small>签字前必须处理</small></article>
+      <article><span>阻断错误</span><strong class="error">{{ errorCount }}</strong><small>成环、缺失和互锁矛盾</small></article>
       <article><span>审阅警告</span><strong class="warning">{{ warningCount }}</strong><small>跨区和重复关系</small></article>
     </div>
 
     <div class="overview-grid">
       <section class="panel">
-        <div class="panel-head"><h3>矩阵完整性</h3><v-chip size="small" color="success" variant="tonal">已覆盖 {{ store.devices.filter((device) => store.rules.some((rule) => rule.triggerId === device.id)).length }}/{{ store.devices.filter((device) => ['感烟探测器','感温探测器','手动报警按钮'].includes(device.type)).length }} 探测回路</v-chip></div>
+        <div class="panel-head"><h3>矩阵完整性</h3><v-chip size="small" color="success" variant="tonal">已覆盖 {{ coveredCount }}/{{ triggerCount }} 报警源</v-chip></div>
         <div class="coverage-list">
-          <div v-for="device in store.devices.filter((item) => ['感烟探测器','感温探测器','手动报警按钮'].includes(item.type))" :key="device.id">
+          <div v-for="device in store.devices.filter((item) => detectorTypes.includes(item.type))" :key="device.id">
             <div><strong>{{ device.name }}</strong><small>{{ device.floor }} / {{ device.zone }} · {{ device.address }}</small></div>
             <v-chip size="small" :color="store.rules.some((rule) => rule.triggerId === device.id && rule.enabled) ? 'success' : 'error'" variant="tonal">
               {{ store.rules.filter((rule) => rule.triggerId === device.id && rule.enabled).length ? `${store.rules.filter((rule) => rule.triggerId === device.id && rule.enabled).length} 个动作` : '缺少动作' }}
@@ -44,12 +47,14 @@ const warningCount = computed(() => store.validations.filter((item) => item.seve
         </div>
       </section>
       <aside class="panel">
-        <div class="panel-head"><h3>专业协同进度</h3><span class="muted">当前版本 R{{ store.revision }}</span></div>
-        <div class="review-progress">
-          <div><span>消防电专业</span><v-progress-linear :model-value="92" color="primary" height="7" rounded /><strong>92%</strong></div>
-          <div><span>暖通专业</span><v-progress-linear :model-value="76" color="secondary" height="7" rounded /><strong>76%</strong></div>
-          <div><span>智能化专业</span><v-progress-linear :model-value="64" color="warning" height="7" rounded /><strong>64%</strong></div>
-          <v-alert type="info" variant="tonal" density="compact" class="mt-4">暖通专业新增 PF-2 反馈互锁，等待消防审阅人部分采纳。</v-alert>
+        <div class="panel-head"><h3>联调账状态</h3><span class="muted">R{{ store.revision }} · {{ store.commissionGraph.configHash.slice(0, 8) }}</span></div>
+        <div class="ledger-status">
+          <strong>{{ store.latestRun ? store.latestRun.id : '尚无运行快照' }}</strong>
+          <v-chip size="small" :color="store.latestRunIsUsable ? 'success' : 'warning'" variant="tonal">
+            {{ store.latestRunIsUsable ? '最新快照可审阅' : store.latestRun ? '快照需重排或恢复' : '等待开始联调' }}
+          </v-chip>
+          <p>开始前自动隔离成环、缺失设备和重复动作；规则变更后未完成运行作废，已完成回执继续留档。</p>
+          <v-btn block color="secondary" variant="tonal" prepend-icon="mdi-play-outline" @click="$router.push('/commissioning')">打开可重放联调账</v-btn>
         </div>
       </aside>
     </div>
@@ -69,8 +74,9 @@ const warningCount = computed(() => store.validations.filter((item) => item.seve
 .coverage-list > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid #edf0f0; }
 .coverage-list strong, .coverage-list small { display: block; }
 .coverage-list small { margin-top: 4px; color: #7b878c; }
-.review-progress { display: grid; gap: 18px; padding: 20px; }
-.review-progress > div { display: grid; grid-template-columns: 82px 1fr 36px; align-items: center; gap: 10px; font-size: 12px; }
+.ledger-status { display: grid; gap: 12px; padding: 20px; }
+.ledger-status strong { font-size: 13px; word-break: break-all; }
+.ledger-status p { margin: 0; color: #66757c; font-size: 12px; line-height: 1.6; }
 @media (max-width: 1000px) { .overview-grid { grid-template-columns: 1fr; } }
 @media (max-width: 680px) { .metric-grid { grid-template-columns: 1fr 1fr; } }
 </style>
